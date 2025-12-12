@@ -11,9 +11,9 @@ from selenium.webdriver.support.ui import WebDriverWait
 LIST_URL = "https://mamikos.com/cari/universitas-airlangga-kampus-c-universitas-airlangga-kampus-c-jalan-dokter-ir-haji-soekarno-mulyorejo-kota-surabaya-jawa-timur-indonesia/all/bulanan/0-15000000?keyword=universitas%20airlangga&suggestion_type=search&rent=2&sort=price,-&price=10000-20000000&singgahsini=0"
 
 
-# ============================================================
-# DRIVER SETUP
-# ============================================================
+# ===============================
+# DRIVER
+# ===============================
 
 def init_driver():
     options = webdriver.ChromeOptions()
@@ -29,9 +29,9 @@ def init_driver():
     return driver
 
 
-# ============================================================
-# LOAD ALL KOST CARDS BY SCROLLING
-# ============================================================
+# ===============================
+# SCROLL UNTIL ALL CARDS LOADED
+# ===============================
 
 def scroll_until_cards_loaded(driver, timeout=20):
     end_time = time.time() + timeout
@@ -52,127 +52,247 @@ def scroll_until_cards_loaded(driver, timeout=20):
     return driver.find_elements(By.CSS_SELECTOR, "div[data-testid='kostRoomCard']")
 
 
-# ============================================================
-# SCRAPE DETAIL OF ONE KOST PAGE
-# ============================================================
+# ===============================
+# SCRAPE DETAIL PAGE
+# ===============================
 
 def scrape_detail_page(driver):
+    WebDriverWait(driver, 15)
     data = {}
 
-    # Allow React components to render
+    # Scroll pelan agar semua komponen React muncul
     for _ in range(5):
         driver.execute_script("window.scrollBy(0, 600);")
         time.sleep(0.8)
 
-    # Nama kos
+    # Tunggu h1 (nama kos)
     try:
-        data["Nama"] = driver.find_element(By.CSS_SELECTOR, "p.detail-title__room-name").text.strip()
+        name = driver.find_element(
+            By.CSS_SELECTOR, "p.detail-title__room-name"
+        ).text.strip()
     except:
-        data["Nama"] = ""
+        name = ""
+    data["Nama"] = name
 
-    # Tipe indekos
+
+    # Tipe indekos lebih robust
     try:
         WebDriverWait(driver, 10).until(
-            lambda d: d.execute_script(
-                "return document.querySelector('span.detail-kost-overview__gender-box')?.innerText.trim().length > 0;"
-            )
+            lambda d: d.execute_script("return document.querySelector('span.detail-kost-overview__gender-box')?.innerText.trim().length > 0;")
         )
+
         tipe = driver.execute_script("""
-            const el = document.querySelector('span.detail-kost-overview__gender-box');
+            let el = document.querySelector('span.detail-kost-overview__gender-box');
             return el ? el.innerText.trim() : "";
         """)
-        data["Tipe Indekos"] = tipe.replace("Kos ", "")
-    except:
-        data["Tipe Indekos"] = ""
 
-    # Harga
+        data['Tipe Indekos'] = tipe.replace("Kos ", "")
+    except:
+        data['Tipe Indekos'] = ""
+
+
+    # ======================
+    # HARGA (AMBIL DARI kostDetailPriceReal)
+    # ======================
     try:
-        harga_elem = driver.find_elements(By.XPATH, "//div[contains(text(),'Rp')]")
-        data["Harga"] = harga_elem[0].text.strip() if harga_elem else ""
+        # Tunggu elemen harga benar-benar ada
+        WebDriverWait(driver, 15).until(
+            lambda d: d.execute_script(
+                "return document.querySelector('[data-testid=\"kostDetailPriceReal\"]') !== null;"
+            )
+        )
+
+        harga_raw = driver.execute_script("""
+            let el = document.querySelector('[data-testid="kostDetailPriceReal"]');
+            return el ? el.innerText.trim() : "";
+        """)
+
+        # Bersihkan: Rp
+        data["Harga"] = harga_raw.replace("Rp", "").strip()
+
     except:
         data["Harga"] = ""
 
-    # Fasilitas via HTML text
+
+    # Ambil seluruh page source untuk fasilitas
     fasilitas_text = driver.page_source.lower()
 
     data["AC"] = "Ada" if "ac" in fasilitas_text else "Tidak Ada"
     data["WiFi"] = "Ada" if "wifi" in fasilitas_text else "Tidak Ada"
 
-    # Kamar mandi
-    dalam = "kamar mandi dalam" in fasilitas_text
-    luar = "kamar mandi luar" in fasilitas_text
+    # ======================
+    # KAMAR MANDI (FIX FINAL)
+    # ======================
+    try:
+        WebDriverWait(driver, 15).until(
+            lambda d: d.execute_script("""
+                return Array.from(
+                    document.querySelectorAll('p.detail-kost-facility-item__label')
+                ).some(el => el.innerText.includes('Mandi'));
+            """)
+        )
 
-    if dalam and luar:
-        data["Kamar Mandi"] = "Dalam dan Luar"
-    elif dalam:
-        data["Kamar Mandi"] = "Dalam"
-    elif luar:
-        data["Kamar Mandi"] = "Luar"
-    else:
+        kamar_mandi = driver.execute_script("""
+            let labels = Array.from(
+                document.querySelectorAll('p.detail-kost-facility-item__label')
+            ).map(el => el.innerText.trim().toLowerCase());
+
+            let has_dalam = labels.some(t => t.includes('mandi dalam'));
+            let has_luar  = labels.some(t => t.includes('mandi luar'));
+
+            if (has_dalam && has_luar) return 'Dalam & Luar';
+            if (has_dalam) return 'Dalam';
+            if (has_luar) return 'Luar';
+            return '';
+        """)
+
+        data["Kamar Mandi"] = kamar_mandi
+
+    except:
         data["Kamar Mandi"] = ""
 
-    data["Parkir"] = "Ada" if "parkir" in fasilitas_text else "Tidak Ada"
+
+    # ======================
+    # PARKIR (Motor / Mobil / Motor & Mobil)
+    # Sepeda dianggap MOTOR
+    # ======================
+    try:
+        WebDriverWait(driver, 15).until(
+            lambda d: d.execute_script("""
+                return Array.from(
+                    document.querySelectorAll('p.detail-kost-facility-item__label')
+                ).some(el => el.innerText.toLowerCase().includes('parkir'));
+            """)
+        )
+
+        parkir = driver.execute_script("""
+            let labels = Array.from(
+                document.querySelectorAll('p.detail-kost-facility-item__label')
+            ).map(el => el.innerText.trim().toLowerCase());
+
+            // Sepeda dianggap motor
+            let has_motor = labels.some(t =>
+                t.includes('parkir motor') || t.includes('parkir sepeda')
+            );
+
+            let has_mobil = labels.some(t => t.includes('parkir mobil'));
+
+            if (has_motor && has_mobil) return 'Motor & Mobil';
+            if (has_motor) return 'Motor';
+            if (has_mobil) return 'Mobil';
+            return '';
+        """)
+
+        data["Parkir"] = parkir
+
+    except:
+        data["Parkir"] = ""
+
+
     data["Dapur"] = "Ada" if "dapur" in fasilitas_text else "Tidak Ada"
     data["Kulkas"] = "Ada" if "kulkas" in fasilitas_text else "Tidak Ada"
     data["Listrik"] = "Termasuk" if "listrik" in fasilitas_text else "Tidak Termasuk"
 
-    # Label fields: Jarak & Luas
+    # Cari label yang memerlukan scroll lebih jauh
+    driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+    time.sleep(1.5)
+
     def find_label(label):
         try:
             elems = driver.find_elements(By.XPATH, f"//*[contains(text(),'{label}')]")
             if not elems:
                 return ""
-            return elems[0].find_element(By.XPATH, "following-sibling::*[1]").text.strip()
+            sibling = elems[0].find_element(By.XPATH, "following-sibling::*[1]")
+            return sibling.text.strip()
         except:
             return ""
 
     data["Jarak ke Kampus"] = find_label("Jarak ke Kampus")
-    data["Luas Kamar"] = find_label("Luas Kamar")
+
+    # ======================
+    # LUAS KAMAR
+    # ======================
+    try:
+        WebDriverWait(driver, 15).until(
+            lambda d: d.execute_script("""
+                return Array.from(document.querySelectorAll(
+                    'p.detail-kost-facility-item__label'
+                )).some(el => el.innerText.includes('x'));
+            """)
+        )
+
+        luas_kamar = driver.execute_script("""
+            let items = document.querySelectorAll('p.detail-kost-facility-item__label');
+            for (let el of items) {
+                let text = el.innerText.trim();
+                if (text.match(/\\d+\\s*x\\s*\\d+/i)) {
+                    return text;
+                }
+            }
+            return "";
+        """)
+
+        data["Luas Kamar"] = luas_kamar
+
+    except:
+        data["Luas Kamar"] = ""
 
     return data
 
 
-# ============================================================
+# ===============================
 # MAIN LOGIC
-# ============================================================
+# ===============================
 
 def main():
     driver = init_driver()
     driver.get(LIST_URL)
     time.sleep(5)
 
-    print("[INFO] Memuat semua kartu kos…")
+    print("[INFO] Loading all cards...")
     cards = scroll_until_cards_loaded(driver)
     total_cards = len(cards)
 
-    print(f"[INFO] Total kartu kos ditemukan: {total_cards}")
+    print(f"[INFO] Total card ditemukan: {total_cards}")
 
+    # Save window utama
     main_window = driver.current_window_handle
+
     results = []
 
     for i in range(total_cards):
-        print(f"\n[INFO] Mengambil data kos {i+1}/{total_cards}")
+        print(f"\n[INFO] Klik card {i+1}/{total_cards}")
 
         cards = driver.find_elements(By.CSS_SELECTOR, "div[data-testid='kostRoomCard']")
+
+        if i >= len(cards):
+            print("[WARN] Card belum muncul, scrolling ulang...")
+            cards = scroll_until_cards_loaded(driver, timeout=10)
+
         card = cards[i]
 
         driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", card)
         time.sleep(1)
 
+        # Klik card
         driver.execute_script("arguments[0].click();", card)
         time.sleep(2)
 
-        # Switch tab
+        # Pindah ke tab baru
         for window in driver.window_handles:
             if window != main_window:
                 driver.switch_to.window(window)
                 break
 
+        # Scrape detail
         detail = scrape_detail_page(driver)
         results.append(detail)
         print(detail)
 
+        # Tutup tab detail
         driver.close()
+
+        # Kembali ke tab utama
         driver.switch_to.window(main_window)
         time.sleep(1)
 
@@ -187,7 +307,7 @@ def main():
         writer.writeheader()
         writer.writerows(results)
 
-    print("\n[SELESAI] Data berhasil disimpan ke data_kos_unair_c.csv")
+    print("\n[SELESAI] Data tersimpan ke data_kos_unair_c.csv")
 
 
 if __name__ == "__main__":
