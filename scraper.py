@@ -17,7 +17,11 @@ LIST_URL = "https://mamikos.com/cari/universitas-airlangga-kampus-c-universitas-
 
 def init_driver():
     options = webdriver.ChromeOptions()
-    options.add_argument("--start-maximized")
+
+    # Viewport
+    options.add_argument("--window-size=1024,968")
+
+    # Anti-detection
     options.add_argument("--disable-blink-features=AutomationControlled")
     options.add_experimental_option("excludeSwitches", ["enable-automation"])
     options.add_experimental_option("useAutomationExtension", False)
@@ -28,12 +32,11 @@ def init_driver():
     )
     return driver
 
-
 # ===============================
 # SCROLL UNTIL ALL CARDS LOADED
 # ===============================
 
-def scroll_until_cards_loaded(driver, timeout=20):
+def scroll_until_cards_loaded(driver, timeout=60):
     end_time = time.time() + timeout
     last_count = 0
 
@@ -41,13 +44,36 @@ def scroll_until_cards_loaded(driver, timeout=20):
         cards = driver.find_elements(By.CSS_SELECTOR, "div[data-testid='kostRoomCard']")
         count = len(cards)
 
+        # Scroll ke bawah
         driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-        time.sleep(1.8)
+        time.sleep(1.5)
 
-        if count == last_count:
-            break
+        # Coba klik tombol "Lihat lebih banyak lagi"
+        try:
+            load_more = driver.find_element(
+                By.CSS_SELECTOR,
+                "a.list__content-load-link"
+            )
 
-        last_count = count
+            if load_more.is_displayed():
+                driver.execute_script("arguments[0].click();", load_more)
+                time.sleep(2.5)  # tunggu data baru masuk
+        except:
+            # Tombol tidak ada → kemungkinan sudah habis
+            pass
+
+        # Ambil ulang jumlah card
+        cards = driver.find_elements(By.CSS_SELECTOR, "div[data-testid='kostRoomCard']")
+        new_count = len(cards)
+
+        # Jika tidak ada penambahan card & tombol tidak ada → stop
+        if new_count == last_count:
+            try:
+                driver.find_element(By.CSS_SELECTOR, "a.list__content-load-link")
+            except:
+                break
+
+        last_count = new_count
 
     return driver.find_elements(By.CSS_SELECTOR, "div[data-testid='kostRoomCard']")
 
@@ -117,8 +143,55 @@ def scrape_detail_page(driver):
     # Ambil seluruh page source untuk fasilitas
     fasilitas_text = driver.page_source.lower()
 
-    data["AC"] = "Ada" if "ac" in fasilitas_text else "Tidak Ada"
-    data["WiFi"] = "Ada" if "wifi" in fasilitas_text else "Tidak Ada"
+    # ======================
+    # AC (Ada / Tidak AC)
+    # ======================
+    try:
+        WebDriverWait(driver, 15).until(
+            lambda d: d.execute_script("""
+                return document.querySelectorAll(
+                    'p.detail-kost-facility-item__label'
+                ).length > 0;
+            """)
+        )
+
+        ac = driver.execute_script("""
+            let labels = Array.from(
+                document.querySelectorAll('p.detail-kost-facility-item__label')
+            ).map(el => el.innerText.trim().toLowerCase());
+
+            return labels.some(t => t === 'ac') ? 'AC' : 'Tidak AC';
+        """)
+
+        data["AC"] = ac
+
+    except:
+        data["AC"] = ""
+
+    # ======================
+    # WIFI (Ada / Tidak Ada)
+    # ======================
+    try:
+        WebDriverWait(driver, 15).until(
+            lambda d: d.execute_script("""
+                return document.querySelectorAll(
+                    'p.detail-kost-facility-item__label'
+                ).length > 0;
+            """)
+        )
+
+        wifi = driver.execute_script("""
+            let labels = Array.from(
+                document.querySelectorAll('p.detail-kost-facility-item__label')
+            ).map(el => el.innerText.trim().toLowerCase());
+
+            return labels.some(t => t === 'wifi') ? 'Ada' : 'Tidak Ada';
+        """)
+
+        data["WiFi"] = wifi
+
+    except:
+        data["WiFi"] = ""
 
     # ======================
     # KAMAR MANDI (FIX FINAL)
@@ -188,10 +261,82 @@ def scrape_detail_page(driver):
     except:
         data["Parkir"] = ""
 
+    # ======================
+    # DAPUR (Bersama / Tidak Ada)
+    # ======================
+    try:
+        WebDriverWait(driver, 15).until(
+            lambda d: d.execute_script("""
+                return document.querySelectorAll(
+                    'p.detail-kost-facility-item__label'
+                ).length > 0;
+            """)
+        )
 
-    data["Dapur"] = "Ada" if "dapur" in fasilitas_text else "Tidak Ada"
-    data["Kulkas"] = "Ada" if "kulkas" in fasilitas_text else "Tidak Ada"
-    data["Listrik"] = "Termasuk" if "listrik" in fasilitas_text else "Tidak Termasuk"
+        dapur = driver.execute_script("""
+            let labels = Array.from(
+                document.querySelectorAll('p.detail-kost-facility-item__label')
+            ).map(el => el.innerText.trim().toLowerCase());
+
+            // Dapur di fasilitas umum = dapur bersama
+            let has_dapur = labels.some(t => t === 'dapur');
+
+            return has_dapur ? 'Bersama' : 'Tidak Ada';
+        """)
+
+        data["Dapur"] = dapur
+
+    except:
+        data["Dapur"] = ""
+
+
+    # ======================
+    # KULKAS (Ada / Tidak Ada)
+    # ======================
+    try:
+        kulkas = driver.execute_script("""
+            let labels = Array.from(
+                document.querySelectorAll('p.detail-kost-facility-item__label')
+            ).map(el => el.innerText.trim().toLowerCase());
+
+            return labels.some(t => t === 'kulkas') ? 'Ada' : 'Tidak Ada';
+        """)
+
+        data["Kulkas"] = kulkas
+
+    except:
+        data["Kulkas"] = ""
+
+    # ======================
+    # LISTRIK (Termasuk / Tidak Termasuk)
+    # ======================
+    try:
+        WebDriverWait(driver, 15).until(
+            lambda d: d.execute_script("""
+                return Array.from(
+                    document.querySelectorAll('p.detail-kost-facility-item__label')
+                ).some(el => el.innerText.toLowerCase().includes('listrik'));
+            """)
+        )
+
+        listrik = driver.execute_script("""
+            let labels = Array.from(
+                document.querySelectorAll('p.detail-kost-facility-item__label')
+            ).map(el => el.innerText.trim().toLowerCase());
+
+            let tidak_termasuk = labels.some(t => t.includes('tidak termasuk listrik'));
+            let termasuk       = labels.some(t => t.includes('termasuk listrik'));
+
+            if (tidak_termasuk) return 'Tidak Termasuk';
+            if (termasuk) return 'Termasuk';
+            return '';
+        """)
+
+        data["Listrik"] = listrik
+
+    except:
+        data["Listrik"] = ""
+
 
     # Cari label yang memerlukan scroll lebih jauh
     driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
@@ -207,7 +352,37 @@ def scrape_detail_page(driver):
         except:
             return ""
 
-    data["Jarak ke Kampus"] = find_label("Jarak ke Kampus")
+    # ======================
+    # JARAK KE KAMPUS (Universitas Airlangga)
+    # ======================
+    try:
+        WebDriverWait(driver, 15).until(
+            lambda d: d.execute_script("""
+                return document.querySelectorAll('[data-testid="landmark-item"]').length > 0;
+            """)
+        )
+
+        jarak_kampus = driver.execute_script("""
+            let items = document.querySelectorAll('[data-testid="landmark-item"]');
+
+            for (let item of items) {
+                let nameEl = item.querySelector('.landmark-item__text-ellipsis');
+                let distEl = item.querySelector('.landmark-item__landmark-distance');
+
+                if (!nameEl || !distEl) continue;
+
+                let name = nameEl.innerText.toLowerCase();
+                if (name.includes('airlangga')) {
+                    return distEl.innerText.trim();
+                }
+            }
+            return '';
+        """)
+
+        data["Jarak ke Kampus"] = jarak_kampus
+
+    except:
+        data["Jarak ke Kampus"] = ""
 
     # ======================
     # LUAS KAMAR
