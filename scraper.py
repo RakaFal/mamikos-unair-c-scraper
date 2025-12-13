@@ -7,7 +7,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 
 
-LIST_URL = "https://mamikos.com/cari/universitas-airlangga-kampus-c-universitas-airlangga-kampus-c-jalan-dokter-ir-haji-soekarno-mulyorejo-kota-surabaya-jawa-timur-indonesia/all/bulanan/0-15000000?keyword=universitas%20airlangga&suggestion_type=search&rent=2&sort=price,-&price=10000-650000&singgahsini=0"
+LIST_URL = "https://mamikos.com/cari/universitas-airlangga-kampus-c-universitas-airlangga-kampus-c-jalan-dokter-ir-haji-soekarno-mulyorejo-kota-surabaya-jawa-timur-indonesia/all/bulanan/0-15000000?keyword=universitas%20airlangga&suggestion_type=search&rent=2&sort=price,-&price=100000-650000&singgahsini=0"
 
 
 # =========================================================
@@ -20,11 +20,32 @@ def init_driver():
     options.add_experimental_option("excludeSwitches", ["enable-automation"])
     options.add_experimental_option("useAutomationExtension", False)
 
-    return webdriver.Chrome(
+    # === HEADLESS MODE ===
+    options.add_argument("--headless=new")
+    options.add_argument("--disable-gpu")
+    options.add_argument("--no-sandbox")
+    options.add_argument("--disable-dev-shm-usage")
+
+    # Anti detection
+    options.add_argument("--disable-blink-features=AutomationControlled")
+    options.add_argument("--disable-infobars")
+    options.add_argument("--disable-extensions")
+
+    driver = webdriver.Chrome(
         service=Service(ChromeDriverManager().install()),
         options=options
     )
 
+    # Hilangkan navigator.webdriver agar tidak terdeteksi bot
+    driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
+        "source": """
+            Object.defineProperty(navigator, 'webdriver', {
+                get: () => undefined
+            })
+        """
+    })
+
+    return driver
 
 # =========================================================
 # SCROLL UNTIL ALL CARDS LOADED
@@ -125,12 +146,16 @@ def scrape_detail_page(driver):
     except:
         labels = []
 
-    data["AC"] = "AC" if "ac" in labels else "Tidak AC"
-    data["WiFi"] = check_facility(labels, "wifi")
+    # AC
+    data["AC"] = check_facility(labels, "AC")
+
+    #WiFi
+    data["WiFi"] = check_facility(labels, "WiFi")
 
     # Kamar mandi
     km_dalam = any("mandi dalam" in t for t in labels)
     km_luar = any("mandi luar" in t for t in labels)
+
     data["Kamar Mandi"] = (
         "Dalam & Luar" if km_dalam and km_luar else
         "Dalam" if km_dalam else
@@ -138,12 +163,18 @@ def scrape_detail_page(driver):
     )
 
     # Parkir
-    motor = any(t in labels for t in ["parkir motor", "parkir sepeda"])
     mobil = any("parkir mobil" in t for t in labels)
-    data["Parkir"] = "Motor & Mobil" if motor and mobil else "Motor" if motor else "Mobil" if mobil else ""
 
-    data["Dapur"] = "Bersama" if "dapur" in labels else "Tidak Ada"
-    data["Kulkas"] = "Ada" if "kulkas" in labels else "Tidak Ada"
+    if mobil:
+        data["Parkir"] = "Motor & Mobil"
+    else:
+        data["Parkir"] = "Motor"
+
+    # Dapur
+    data["Dapur"] = check_facility(labels, "dapur")
+
+    # Kulkas
+    data["Kulkas"] = check_facility(labels, "kulkas")
 
     # Listrik
     if any("tidak termasuk listrik" in t for t in labels):
@@ -232,7 +263,7 @@ def main():
         "AC","WiFi","Kamar Mandi","Parkir","Dapur","Listrik","Kulkas","Harga"
     ]
 
-    with open("data_kos_unair_c.csv", "w", newline="", encoding="utf-8") as f:
+    with open("data_kos_unair_c_650.csv", "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=header)
         writer.writeheader()
         writer.writerows(results)
